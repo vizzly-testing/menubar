@@ -108,7 +108,7 @@ struct PanelView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
     }
-    .frame(width: 240)
+    .frame(width: 280)
     .background(Color.vzBg)
     .preferredColorScheme(.dark)
   }
@@ -172,7 +172,7 @@ struct PanelView: View {
   }
 
   private var serverList: some View {
-    VStack(spacing: 4) {
+    VStack(spacing: 6) {
       ForEach(serverManager.servers) { server in
         ServerRowView(
           server: server,
@@ -291,39 +291,42 @@ struct ServerRowView: View {
 
   var body: some View {
     Button { serverManager.openDashboard(server) } label: {
-      HStack(spacing: 8) {
-        // Status
+      HStack(alignment: .top, spacing: 8) {
+        // Status - aligned to first line
         Circle()
           .fill(statusColor)
           .frame(width: 6, height: 6)
+          .padding(.top, 4)
 
-        // Name + Port
-        Text(server.displayName)
-          .font(.system(size: 11, weight: .medium))
-          .lineLimit(1)
+        // Name + metadata
+        VStack(alignment: .leading, spacing: 2) {
+          Text(server.displayName)
+            .font(.system(size: 11, weight: .medium))
+            .lineLimit(1)
 
-        Text(":\(String(server.port))")
-          .font(.system(size: 10, design: .monospaced))
-          .foregroundStyle(Color.vzMuted)
+          HStack(spacing: 6) {
+            Text("localhost:\(String(server.port))")
+              .font(.system(size: 9, design: .monospaced))
+              .foregroundStyle(Color.vzMuted)
 
-        Spacer()
-
-        // Stats
-        if let stats, stats.total > 0 {
-          HStack(spacing: 2) {
-            Image(systemName: stats.isHealthy ? "checkmark" : "xmark")
-              .font(.system(size: 7, weight: .bold))
-            Text("\(stats.isHealthy ? stats.passed : stats.failed)")
-              .font(.system(size: 9, weight: .semibold, design: .rounded))
+            if let stats, stats.total > 0 {
+              HStack(spacing: 2) {
+                Image(systemName: stats.isHealthy ? "checkmark" : "xmark")
+                  .font(.system(size: 7, weight: .bold))
+                Text("\(stats.isHealthy ? stats.passed : stats.failed)")
+                  .font(.system(size: 9, weight: .semibold, design: .rounded))
+              }
+              .foregroundStyle(stats.isHealthy ? Color.vzSuccess : Color.vzDanger)
+            }
           }
-          .foregroundStyle(stats.isHealthy ? Color.vzSuccess : Color.vzDanger)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
 
         // Menu
         serverMenu
       }
-      .padding(.horizontal, 8)
-      .padding(.vertical, 6)
+      .padding(.horizontal, 10)
+      .padding(.vertical, 8)
       .background(
         RoundedRectangle(cornerRadius: 6)
           .fill(isHovered ? Color.white.opacity(0.06) : Color.white.opacity(0.02))
@@ -368,6 +371,8 @@ struct ServerRowView: View {
     }
     .menuStyle(.borderlessButton)
     .menuIndicator(.hidden)
+    .fixedSize()
+    .padding(.top, 4)
   }
 
   private var statusColor: Color {
