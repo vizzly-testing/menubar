@@ -154,6 +154,10 @@ struct PanelView: View {
       errorBanner(error)
     }
 
+    if let configIssue = serverManager.cliConfigurationIssueMessage {
+      configIssueBanner(configIssue)
+    }
+
     if !serverManager.isCLIConfigured {
       emptyState(
         icon: "square.stack.3d.up.fill",
@@ -218,18 +222,35 @@ struct PanelView: View {
     .padding(.bottom, 6)
   }
 
+  private func configIssueBanner(_ message: String) -> some View {
+    HStack(spacing: 6) {
+      Image(systemName: "wrench.and.screwdriver.fill")
+        .foregroundStyle(Color.vzAccent)
+      Text(message)
+        .font(.system(size: 10))
+        .lineLimit(2)
+      Spacer()
+      Button("Open Config") { serverManager.openCLIConfigInFinder() }
+        .buttonStyle(.plain)
+        .font(.system(size: 9, weight: .medium))
+        .foregroundStyle(Color.vzAccent)
+    }
+    .padding(8)
+    .background(Color.vzAccent.opacity(0.10))
+    .clipShape(RoundedRectangle(cornerRadius: 6))
+    .padding(.bottom, 6)
+  }
+
   // MARK: Footer
 
   private var footer: some View {
     HStack(spacing: 6) {
-      Button { startServer() } label: {
-        Image(systemName: "plus")
-          .font(.system(size: 11, weight: .medium))
-          .frame(width: 28, height: 24)
+      if let refreshedAt = serverManager.lastRegistryRefreshAt {
+        Text("Refreshed \(refreshedAt, style: .time)")
+          .font(.system(size: 9, design: .monospaced))
+          .foregroundStyle(Color.vzMuted)
+          .padding(.leading, 2)
       }
-      .buttonStyle(FooterButtonStyle())
-      .disabled(!serverManager.isCLIConfigured)
-      .help("Start Server")
 
       Spacer()
 
@@ -241,13 +262,14 @@ struct PanelView: View {
       .buttonStyle(FooterButtonStyle())
       .help("Settings")
 
-      Button { NSApp.terminate(nil) } label: {
-        Image(systemName: "power")
+      Button { startServer() } label: {
+        Image(systemName: "plus")
           .font(.system(size: 11, weight: .medium))
           .frame(width: 28, height: 24)
       }
       .buttonStyle(FooterButtonStyle())
-      .help("Quit")
+      .disabled(!serverManager.isCLIConfigured)
+      .help("Start Server")
     }
   }
 
@@ -289,6 +311,15 @@ struct ServerRowView: View {
   @Environment(\.openWindow) private var openWindow
   @State private var isHovered = false
 
+  private var compactDirectoryPath: String {
+    let homePath = FileManager.default.homeDirectoryForCurrentUser.path
+    let normalized = URL(fileURLWithPath: server.directory).standardizedFileURL.path
+    if normalized.hasPrefix(homePath) {
+      return "~" + String(normalized.dropFirst(homePath.count))
+    }
+    return normalized
+  }
+
   var body: some View {
     Button { serverManager.openDashboard(server) } label: {
       HStack(alignment: .top, spacing: 8) {
@@ -319,6 +350,11 @@ struct ServerRowView: View {
               .foregroundStyle(stats.isHealthy ? Color.vzSuccess : Color.vzDanger)
             }
           }
+
+          Text(compactDirectoryPath)
+            .font(.system(size: 9, design: .monospaced))
+            .foregroundStyle(Color.vzMuted.opacity(0.9))
+            .lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -444,6 +480,7 @@ struct LogsWindow: View {
   @State private var autoScroll = true
 
   private var logs: [LogEntry] { serverManager.serverLogs[server.id] ?? [] }
+  private var commandErrors: [CLIError] { serverManager.commandErrors(for: server) }
 
   var body: some View {
     VStack(spacing: 0) {
@@ -473,6 +510,12 @@ struct LogsWindow: View {
           Image(systemName: "arrow.clockwise")
         }
         .buttonStyle(.borderless)
+
+        if !commandErrors.isEmpty {
+          Button("Clear Errors") { serverManager.clearCommandErrors(for: server) }
+            .buttonStyle(.borderless)
+            .font(.system(size: 10))
+        }
       }
       .padding(10)
       .background(.bar)
@@ -480,12 +523,20 @@ struct LogsWindow: View {
       Divider()
 
       // Logs
-      if logs.isEmpty {
+      if logs.isEmpty && commandErrors.isEmpty {
         ContentUnavailableView("No Logs", systemImage: "text.alignleft", description: Text("Logs appear as requests are processed"))
       } else {
         ScrollViewReader { proxy in
           ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
+            LazyVStack(alignment: .leading, spacing: 6) {
+              ForEach(commandErrors) { error in
+                CommandErrorRow(error: error)
+              }
+
+              if !commandErrors.isEmpty && !logs.isEmpty {
+                Divider().padding(.vertical, 4)
+              }
+
               ForEach(logs) { entry in
                 LogRow(entry: entry).id(entry.id)
               }
@@ -508,6 +559,34 @@ struct LogsWindow: View {
     if stats.hasFailures { return .vzDanger }
     if stats.isHealthy { return .vzSuccess }
     return .vzAccent
+  }
+}
+
+struct CommandErrorRow: View {
+  let error: CLIError
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      HStack(spacing: 6) {
+        Image(systemName: "exclamationmark.octagon.fill")
+          .font(.system(size: 10))
+          .foregroundStyle(Color.vzDanger)
+        Text(error.message)
+          .font(.system(size: 10, weight: .semibold))
+        Spacer()
+        Text(error.timestamp, style: .time)
+          .font(.system(size: 9, design: .monospaced))
+          .foregroundStyle(.tertiary)
+      }
+
+      Text(error.displayDetail)
+        .font(.system(size: 9, design: .monospaced))
+        .foregroundStyle(Color.vzMuted)
+        .textSelection(.enabled)
+    }
+    .padding(8)
+    .background(Color.vzDanger.opacity(0.10))
+    .clipShape(RoundedRectangle(cornerRadius: 6))
   }
 }
 

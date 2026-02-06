@@ -53,6 +53,28 @@ struct Server: Identifiable, Codable, Equatable {
         case id, port, pid, directory, startedAt, configPath, name, logFile, stats
     }
 
+    init(
+        id: String,
+        port: Int,
+        pid: Int,
+        directory: String,
+        startedAt: Date,
+        configPath: String?,
+        name: String,
+        logFile: String?,
+        stats: ServerStats?
+    ) {
+        self.id = id
+        self.port = port
+        self.pid = pid
+        self.directory = directory
+        self.startedAt = startedAt
+        self.configPath = configPath
+        self.name = name
+        self.logFile = logFile
+        self.stats = stats
+    }
+
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
@@ -72,6 +94,52 @@ struct ServerRegistry: Codable {
     let servers: [Server]
 
     static let empty = ServerRegistry(version: 1, servers: [])
+}
+
+struct SingleServerRegistry: Decodable {
+    let pid: Int
+    let port: Int
+    let startTimeMs: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case pid, port, startTime
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        pid = try container.decode(Int.self, forKey: .pid)
+
+        if let intPort = try? container.decode(Int.self, forKey: .port) {
+            port = intPort
+        } else if let stringPort = try? container.decode(String.self, forKey: .port), let parsed = Int(stringPort) {
+            port = parsed
+        } else {
+            throw DecodingError.dataCorruptedError(forKey: .port, in: container, debugDescription: "Expected int or string for port")
+        }
+
+        if let millis = try? container.decode(Double.self, forKey: .startTime) {
+            startTimeMs = millis
+        } else if let intMillis = try? container.decode(Int.self, forKey: .startTime) {
+            startTimeMs = Double(intMillis)
+        } else {
+            startTimeMs = nil
+        }
+    }
+
+    func asServer(directory: String, name: String) -> Server {
+        let seconds = (startTimeMs ?? Date().timeIntervalSince1970 * 1000) / 1000
+        return Server(
+            id: "single-\(pid)-\(port)",
+            port: port,
+            pid: pid,
+            directory: directory,
+            startedAt: Date(timeIntervalSince1970: seconds),
+            configPath: nil,
+            name: name,
+            logFile: nil,
+            stats: nil
+        )
+    }
 }
 
 struct ServerStats: Codable, Equatable {

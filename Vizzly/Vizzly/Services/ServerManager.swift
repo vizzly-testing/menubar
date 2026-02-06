@@ -14,18 +14,23 @@ class ServerManager: ObservableObject {
     @Published private(set) var servers: [Server] = []
     @Published private(set) var serverStats: [String: ServerStats] = [:]
     @Published private(set) var serverLogs: [String: [LogEntry]] = [:]
+    @Published private(set) var commandErrorsByDirectory: [String: [CLIError]] = [:]
+    @Published private(set) var lastRegistryRefreshAt: Date?
 
     private let registryURL: URL
+    private let singleServerURL: URL
     private let vizzlyHomeURL: URL
     private var registryMonitor: FileMonitor?
     private var projectMonitors: [String: FileMonitor] = [:]
     private var logMonitors: [String: FileMonitor] = [:]
+    private var workingDirectoryCache: [Int: String] = [:]
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "dev.vizzly.menubar", category: "ServerManager")
 
     init() {
         let home = FileManager.default.homeDirectoryForCurrentUser
         vizzlyHomeURL = home.appendingPathComponent(".vizzly")
         registryURL = vizzlyHomeURL.appendingPathComponent("servers.json")
+        singleServerURL = vizzlyHomeURL.appendingPathComponent("server.json")
 
         // Start watching immediately
         startWatching()
@@ -99,12 +104,39 @@ class ServerManager: ObservableObject {
     // MARK: - Registry Loading
 
     private func loadRegistry() {
+        lastRegistryRefreshAt = Date()
         let previousServerIds = Set(servers.map { $0.id })
+        var loadedServers: [Server] = []
 
+        if let registryServers = loadMultiServerRegistry() {
+            loadedServers.append(contentsOf: registryServers)
+        }
+
+        if let singleServer = loadSingleServerRegistry() {
+            if !loadedServers.contains(where: { $0.pid == singleServer.pid && $0.port == singleServer.port }) {
+                loadedServers.append(singleServer)
+            }
+        }
+
+        let liveServers = loadedServers.filter { isProcessAlive(pid: $0.pid) }
+        servers = liveServers
+        let livePids = Set(liveServers.map { $0.pid })
+        workingDirectoryCache = workingDirectoryCache.filter { livePids.contains($0.key) }
+
+        for server in liveServers {
+            if let stats = server.stats {
+                serverStats[server.id] = stats
+            }
+        }
+
+        let currentServerIds = Set(liveServers.map { $0.id })
+        cleanupProjectMonitors(for: currentServerIds)
+        setupProjectMonitors(for: liveServers, previousIds: previousServerIds)
+    }
+
+    private func loadMultiServerRegistry() -> [Server]? {
         guard FileManager.default.fileExists(atPath: registryURL.path) else {
-            servers = []
-            cleanupProjectMonitors(for: [])
-            return
+            return nil
         }
 
         do {
@@ -118,7 +150,6 @@ class ServerManager: ObservableObject {
                 if let date = formatter.date(from: dateString) {
                     return date
                 }
-                // Fallback without fractional seconds
                 let basicFormatter = ISO8601DateFormatter()
                 if let date = basicFormatter.date(from: dateString) {
                     return date
@@ -126,30 +157,74 @@ class ServerManager: ObservableObject {
                 throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid date: \(dateString)")
             }
             let registry = try decoder.decode(ServerRegistry.self, from: data)
-
-            // Filter out stale servers (PID no longer exists)
-            let liveServers = registry.servers.filter { server in
-                kill(Int32(server.pid), 0) == 0
-            }
-
-            servers = liveServers
-
-            // Update stats from registry if embedded
-            for server in liveServers {
-                if let stats = server.stats {
-                    serverStats[server.id] = stats
-                }
-            }
-
-            // Setup/cleanup project monitors for report-data.json
-            let currentServerIds = Set(liveServers.map { $0.id })
-            cleanupProjectMonitors(for: currentServerIds)
-            setupProjectMonitors(for: liveServers, previousIds: previousServerIds)
-
+            return registry.servers
         } catch {
-            logger.error("Failed to load registry: \(error.localizedDescription, privacy: .public)")
-            servers = []
-            cleanupProjectMonitors(for: [])
+            logger.error("Failed to load servers.json: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
+    private func loadSingleServerRegistry() -> Server? {
+        guard FileManager.default.fileExists(atPath: singleServerURL.path) else {
+            return nil
+        }
+
+        do {
+            let data = try Data(contentsOf: singleServerURL)
+            let payload = try JSONDecoder().decode(SingleServerRegistry.self, from: data)
+            let homeDirectory = FileManager.default.homeDirectoryForCurrentUser.path
+            let directory = resolveWorkingDirectory(for: payload.pid) ?? homeDirectory
+            let name = projectDisplayName(for: directory)
+            return payload.asServer(directory: directory, name: name)
+        } catch {
+            logger.error("Failed to load server.json: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
+    private func isProcessAlive(pid: Int) -> Bool {
+        errno = 0
+        if kill(Int32(pid), 0) == 0 {
+            return true
+        }
+        return errno == EPERM
+    }
+
+    private func resolveWorkingDirectory(for pid: Int) -> String? {
+        if let cached = workingDirectoryCache[pid] {
+            return cached
+        }
+
+        let process = Process()
+        let stdout = Pipe()
+        let stderr = Pipe()
+
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        process.arguments = ["-a", "-p", String(pid), "-d", "cwd", "-Fn"]
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+
+            guard process.terminationStatus == 0 else { return nil }
+            let data = stdout.fileHandleForReading.readDataToEndOfFile()
+            guard let output = String(data: data, encoding: .utf8) else { return nil }
+            let directory = output
+                .split(separator: "\n")
+                .first(where: { $0.hasPrefix("n/") })
+                .map { String($0.dropFirst()) }
+
+            if let directory {
+                let standardized = URL(fileURLWithPath: directory).standardizedFileURL.path
+                workingDirectoryCache[pid] = standardized
+                return standardized
+            }
+
+            return nil
+        } catch {
+            return nil
         }
     }
 
@@ -195,6 +270,16 @@ class ServerManager: ObservableObject {
             serverStats.removeValue(forKey: id)
             serverLogs.removeValue(forKey: id)
         }
+        cleanupCommandErrors(for: currentIds)
+    }
+
+    private func cleanupCommandErrors(for currentIds: Set<String>) {
+        let currentDirectories = Set(
+            servers
+                .filter { currentIds.contains($0.id) }
+                .map { URL(fileURLWithPath: $0.directory).standardizedFileURL.path }
+        )
+        commandErrorsByDirectory = commandErrorsByDirectory.filter { currentDirectories.contains($0.key) }
     }
 
     private func loadReportData(for server: Server) {
@@ -288,7 +373,9 @@ class ServerManager: ObservableObject {
             let detail = [result.error, result.output]
                 .filter { !$0.isEmpty }
                 .joined(separator: "\n")
-            lastError = CLIError(message: "Failed to stop server", detail: detail)
+            let error = CLIError(message: "Failed to stop server", detail: detail)
+            lastError = error
+            appendCommandError(error, directory: server.directoryURL)
         }
 
         loadRegistry()
@@ -301,7 +388,9 @@ class ServerManager: ObservableObject {
             let detail = [result.error, result.output]
                 .filter { !$0.isEmpty }
                 .joined(separator: "\n")
-            lastError = CLIError(message: "Failed to start server", detail: detail)
+            let error = CLIError(message: "Failed to start server", detail: detail)
+            lastError = error
+            appendCommandError(error, directory: directory)
         }
 
         loadRegistry()
@@ -311,58 +400,151 @@ class ServerManager: ObservableObject {
         lastError = nil
     }
 
+    func commandErrors(for server: Server) -> [CLIError] {
+        let key = URL(fileURLWithPath: server.directory).standardizedFileURL.path
+        return commandErrorsByDirectory[key] ?? []
+    }
+
+    func clearCommandErrors(for server: Server) {
+        let key = URL(fileURLWithPath: server.directory).standardizedFileURL.path
+        commandErrorsByDirectory.removeValue(forKey: key)
+    }
+
+    private func appendCommandError(_ error: CLIError, directory: URL) {
+        let key = directory.standardizedFileURL.path
+        var current = commandErrorsByDirectory[key] ?? []
+        current.append(error)
+        commandErrorsByDirectory[key] = Array(current.suffix(20))
+    }
+
     // MARK: - CLI Path Configuration
 
     /// Config structure for reading userPath from config.json
     private struct GlobalConfig: Codable {
         let userPath: String?
+        let runtime: Runtime?
+        let projects: [String: Project]?
+
+        struct Runtime: Codable {
+            let npxPath: String?
+        }
+
+        struct Project: Codable {
+            let projectName: String?
+        }
     }
 
-    /// Get the user's PATH from CLI-written config
-    /// Returns nil if CLI hasn't been run yet (user needs to run any vizzly command first)
-    private func getUserPath() -> String? {
-        let configURL = vizzlyHomeURL.appendingPathComponent("config.json")
+    private enum CLIConfigurationIssue {
+        case missingConfig
+        case missingUserPath
+        case missingNpxPath
 
+        var message: String {
+            switch self {
+            case .missingConfig:
+                return "Missing ~/.vizzly/config.json. Run `vizzly --help` in Terminal first."
+            case .missingUserPath:
+                return "Missing `userPath` in ~/.vizzly/config.json."
+            case .missingNpxPath:
+                return "Missing `runtime.npxPath` in ~/.vizzly/config.json."
+            }
+        }
+    }
+
+    private func loadGlobalConfig() -> GlobalConfig? {
+        let configURL = vizzlyHomeURL.appendingPathComponent("config.json")
         guard FileManager.default.fileExists(atPath: configURL.path) else {
             return nil
         }
 
         do {
             let data = try Data(contentsOf: configURL)
-            let config = try JSONDecoder().decode(GlobalConfig.self, from: data)
-            return config.userPath
+            return try JSONDecoder().decode(GlobalConfig.self, from: data)
         } catch {
             return nil
         }
     }
 
+    private func currentCLIConfigurationIssue() -> CLIConfigurationIssue? {
+        guard let config = loadGlobalConfig() else {
+            return .missingConfig
+        }
+        guard let userPath = config.userPath, !userPath.isEmpty else {
+            return .missingUserPath
+        }
+        guard let npxPath = config.runtime?.npxPath, !npxPath.isEmpty else {
+            return .missingNpxPath
+        }
+        return nil
+    }
+
+    var cliConfigurationIssueMessage: String? {
+        currentCLIConfigurationIssue()?.message
+    }
+
+    func openCLIConfigInFinder() {
+        let configURL = vizzlyHomeURL.appendingPathComponent("config.json")
+        if FileManager.default.fileExists(atPath: configURL.path) {
+            NSWorkspace.shared.selectFile(configURL.path, inFileViewerRootedAtPath: vizzlyHomeURL.path)
+        } else {
+            NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: vizzlyHomeURL.path)
+        }
+    }
+
     /// Run a CLI command using the stored user PATH
     private func runCLICommand(_ args: [String], in directory: URL) async -> (success: Bool, output: String, error: String) {
-        guard let userPath = getUserPath() else {
-            return (false, "", "Vizzly CLI not configured. Run any 'vizzly' command in your terminal first to auto-configure.")
+        guard let config = loadGlobalConfig() else {
+            return (false, "", CLIConfigurationIssue.missingConfig.message)
         }
 
-        return await Task.detached(priority: .userInitiated) { [args, directory, userPath] in
-            let process = Process()
-            let stdoutPipe = Pipe()
-            let stderrPipe = Pipe()
+        guard let userPath = config.userPath, !userPath.isEmpty else {
+            return (false, "", CLIConfigurationIssue.missingUserPath.message)
+        }
 
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = ["npx", "vizzly"] + args
+        guard let npxPath = config.runtime?.npxPath, !npxPath.isEmpty else {
+            return (false, "", CLIConfigurationIssue.missingNpxPath.message)
+        }
+
+        return await Task.detached(priority: .userInitiated) { [args, directory, userPath, npxPath] in
+            let process = Process()
+            let fileManager = FileManager.default
+            let tempDir = fileManager.temporaryDirectory
+            let stdoutURL = tempDir.appendingPathComponent("vizzly-menubar-\(UUID().uuidString)-stdout.log")
+            let stderrURL = tempDir.appendingPathComponent("vizzly-menubar-\(UUID().uuidString)-stderr.log")
+
+            _ = fileManager.createFile(atPath: stdoutURL.path, contents: nil)
+            _ = fileManager.createFile(atPath: stderrURL.path, contents: nil)
+
+            guard
+                let stdoutHandle = try? FileHandle(forWritingTo: stdoutURL),
+                let stderrHandle = try? FileHandle(forWritingTo: stderrURL)
+            else {
+                return (false, "", "Failed to prepare output capture for CLI command.")
+            }
+
+            process.executableURL = URL(fileURLWithPath: npxPath)
+            process.arguments = ["vizzly"] + args
             process.currentDirectoryURL = directory
-            process.standardOutput = stdoutPipe
-            process.standardError = stderrPipe
+            process.standardOutput = stdoutHandle
+            process.standardError = stderrHandle
 
             var environment = ProcessInfo.processInfo.environment
             environment["PATH"] = userPath
             process.environment = environment
 
+            defer {
+                try? stdoutHandle.close()
+                try? stderrHandle.close()
+                try? fileManager.removeItem(at: stdoutURL)
+                try? fileManager.removeItem(at: stderrURL)
+            }
+
             do {
                 try process.run()
                 process.waitUntilExit()
 
-                let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-                let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                let stdoutData = (try? Data(contentsOf: stdoutURL)) ?? Data()
+                let stderrData = (try? Data(contentsOf: stderrURL)) ?? Data()
                 let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
                 let stderr = String(data: stderrData, encoding: .utf8) ?? ""
 
@@ -371,6 +553,19 @@ class ServerManager: ObservableObject {
                 return (false, "", error.localizedDescription)
             }
         }.value
+    }
+
+    private func projectDisplayName(for directory: String) -> String {
+        let normalizedDirectory = URL(fileURLWithPath: directory).standardizedFileURL.path
+        if let projects = loadGlobalConfig()?.projects {
+            for (path, project) in projects {
+                let normalizedPath = URL(fileURLWithPath: path).standardizedFileURL.path
+                if normalizedPath == normalizedDirectory, let name = project.projectName, !name.isEmpty {
+                    return name
+                }
+            }
+        }
+        return URL(fileURLWithPath: normalizedDirectory).lastPathComponent
     }
 
     // MARK: - Computed Properties
@@ -394,7 +589,7 @@ class ServerManager: ObservableObject {
 
     /// Whether the CLI has been configured (user PATH exists in config)
     var isCLIConfigured: Bool {
-        getUserPath() != nil
+        currentCLIConfigurationIssue() == nil
     }
 }
 
