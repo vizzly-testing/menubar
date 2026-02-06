@@ -52,3 +52,7 @@ Thumbs.db
 # Sparkle updates
 *.delta
 appcast.xml
+
+# Local tooling
+.claude/
+buildServer.json
