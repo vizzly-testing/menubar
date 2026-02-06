@@ -8,6 +8,7 @@
 import Foundation
 import Combine
 import AppKit
+import os
 
 class ServerManager: ObservableObject {
     @Published private(set) var servers: [Server] = []
@@ -19,6 +20,7 @@ class ServerManager: ObservableObject {
     private var registryMonitor: FileMonitor?
     private var projectMonitors: [String: FileMonitor] = [:]
     private var logMonitors: [String: FileMonitor] = [:]
+    private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "dev.vizzly.menubar", category: "ServerManager")
 
     init() {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -145,7 +147,7 @@ class ServerManager: ObservableObject {
             setupProjectMonitors(for: liveServers, previousIds: previousServerIds)
 
         } catch {
-            print("Failed to load registry: \(error)")
+            logger.error("Failed to load registry: \(error.localizedDescription, privacy: .public)")
             servers = []
             cleanupProjectMonitors(for: [])
         }
@@ -206,7 +208,7 @@ class ServerManager: ObservableObject {
             let reportData = try JSONDecoder().decode(ReportData.self, from: data)
             serverStats[server.id] = reportData.stats
         } catch {
-            print("Failed to load report data for \(server.name): \(error)")
+            logger.error("Failed to load report data for \(server.name, privacy: .public): \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -214,12 +216,12 @@ class ServerManager: ObservableObject {
 
     private func loadRecentLogs(for server: Server, lineCount: Int = 100) {
         guard let logURL = server.logFileURL else {
-            print("[Logs] No logFileURL for \(server.name)")
+            logger.debug("No log file URL for \(server.name, privacy: .public)")
             return
         }
 
         guard FileManager.default.fileExists(atPath: logURL.path) else {
-            print("[Logs] File not found: \(logURL.path)")
+            logger.debug("Log file not found: \(logURL.path, privacy: .public)")
             return
         }
 
@@ -228,10 +230,9 @@ class ServerManager: ObservableObject {
             let rawLines = content.components(separatedBy: .newlines)
             let entries = rawLines.suffix(lineCount).compactMap { LogEntry.parse($0) }
 
-            print("[Logs] Loaded \(entries.count) entries from \(rawLines.count) lines for \(server.name)")
             serverLogs[server.id] = entries
         } catch {
-            print("[Logs] Failed to load for \(server.name): \(error)")
+            logger.error("Failed to load logs for \(server.name, privacy: .public): \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -341,39 +342,23 @@ class ServerManager: ObservableObject {
             return (false, "", "Vizzly CLI not configured. Run any 'vizzly' command in your terminal first to auto-configure.")
         }
 
-        let process = Process()
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
+        return await Task.detached(priority: .userInitiated) { [args, directory, userPath] in
+            let process = Process()
+            let stdoutPipe = Pipe()
+            let stderrPipe = Pipe()
 
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["npx", "vizzly"] + args
-        process.currentDirectoryURL = directory
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = ["npx", "vizzly"] + args
+            process.currentDirectoryURL = directory
+            process.standardOutput = stdoutPipe
+            process.standardError = stderrPipe
 
-        // Use the stored user PATH
-        var environment = ProcessInfo.processInfo.environment
-        environment["PATH"] = userPath
-        process.environment = environment
+            var environment = ProcessInfo.processInfo.environment
+            environment["PATH"] = userPath
+            process.environment = environment
 
-        do {
-            try process.run()
-
-            // For daemon commands, wait a bit then check status
-            if args.contains("start") {
-                try await Task.sleep(for: .seconds(2))
-
-                let stdoutData = stdoutPipe.fileHandleForReading.availableData
-                let stderrData = stderrPipe.fileHandleForReading.availableData
-                let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
-                let stderr = String(data: stderrData, encoding: .utf8) ?? ""
-
-                if !process.isRunning && process.terminationStatus != 0 {
-                    return (false, stdout, stderr)
-                }
-                return (true, stdout, stderr)
-            } else {
-                // For non-daemon commands, wait for completion
+            do {
+                try process.run()
                 process.waitUntilExit()
 
                 let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
@@ -382,10 +367,10 @@ class ServerManager: ObservableObject {
                 let stderr = String(data: stderrData, encoding: .utf8) ?? ""
 
                 return (process.terminationStatus == 0, stdout, stderr)
+            } catch {
+                return (false, "", error.localizedDescription)
             }
-        } catch {
-            return (false, "", error.localizedDescription)
-        }
+        }.value
     }
 
     // MARK: - Computed Properties
@@ -400,7 +385,11 @@ class ServerManager: ObservableObject {
 
     var allHealthy: Bool {
         guard hasRunningServers else { return false }
-        return serverStats.values.allSatisfy { $0.isHealthy }
+        guard servers.allSatisfy({ serverStats[$0.id] != nil }) else { return false }
+        return servers.allSatisfy { server in
+            guard let stats = serverStats[server.id] else { return false }
+            return stats.isHealthy
+        }
     }
 
     /// Whether the CLI has been configured (user PATH exists in config)

@@ -24,7 +24,7 @@ brew install --cask vizzly
 
 ## Requirements
 
-- macOS 13.0 (Ventura) or later
+- macOS 15.7 or later
 - [Vizzly CLI](https://github.com/vizzly-testing/cli) installed (`npm install -g @vizzly-testing/cli`)
 
 ## Development
@@ -40,7 +40,7 @@ open Vizzly.xcodeproj
 
 ## How It Works
 
-The menubar app watches `~/.vizzly/servers.json` for running TDD servers and polls their health endpoints for stats. It spawns CLI commands for server lifecycle management.
+The menubar app watches `~/.vizzly/servers.json` for running TDD servers and monitors project/log files for live updates. It spawns CLI commands for server lifecycle management.
 
 See [PLAN.md](./PLAN.md) for detailed architecture documentation.
 
