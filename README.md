@@ -2,6 +2,8 @@
 
 A native macOS menubar app for managing [Vizzly](https://vizzly.dev) TDD servers.
 
+<img width="326" height="205" alt="image" src="https://github.com/user-attachments/assets/63f688e7-8e2e-4c3a-9f3a-0d783ff4cc02" />
+
 ## Features
 
 - See all running TDD servers at a glance
