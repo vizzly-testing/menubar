@@ -1,0 +1,154 @@
+name: Update Sparkle Appcast
+
+on:
+  release:
+    types: [published, edited]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag (for example: v1.2.3). Leave empty to use latest release."
+        required: false
+        type: string
+      asset_regex:
+        description: "Regex used to find release archives."
+        required: false
+        default: "Vizzly.*\\.zip$"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  appcast:
+    runs-on: macos-15
+    env:
+      SPARKLE_VERSION: "2.8.1"
+      DEFAULT_ASSET_REGEX: "Vizzly.*\\.zip$"
+    steps:
+      - name: Resolve release and select archive
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_RELEASE_TAG: ${{ github.event.inputs.release_tag }}
+          INPUT_ASSET_REGEX: ${{ github.event.inputs.asset_regex }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_RELEASE_URL: ${{ github.event.release.url }}
+        run: |
+          set -euo pipefail
+
+          asset_regex="${INPUT_ASSET_REGEX:-$DEFAULT_ASSET_REGEX}"
+          if [ -z "$asset_regex" ]; then
+            asset_regex="$DEFAULT_ASSET_REGEX"
+          fi
+
+          if [ "$EVENT_NAME" = "release" ] && [ -n "${EVENT_RELEASE_URL:-}" ]; then
+            release_json="$(gh api "$EVENT_RELEASE_URL")"
+          elif [ -n "${INPUT_RELEASE_TAG:-}" ]; then
+            release_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$INPUT_RELEASE_TAG")"
+          else
+            release_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest")"
+          fi
+
+          tag_name="$(echo "$release_json" | jq -r '.tag_name')"
+          release_id="$(echo "$release_json" | jq -r '.id')"
+
+          archive_name="$(
+            echo "$release_json" \
+              | jq -r --arg re "$asset_regex" '
+                .assets
+                | map(select(.name | test($re)))
+                | sort_by(.updated_at)
+                | last
+                | .name // empty
+              '
+          )"
+
+          if [ -z "$archive_name" ]; then
+            echo "No release asset matched regex: $asset_regex"
+            echo "Upload your signed ZIP first, then rerun this workflow."
+            exit 1
+          fi
+
+          download_url="$(
+            echo "$release_json" \
+              | jq -r --arg name "$archive_name" '.assets[] | select(.name == $name) | .browser_download_url'
+          )"
+
+          if [ -z "$download_url" ]; then
+            echo "Matched asset has no download URL."
+            exit 1
+          fi
+
+          mkdir -p artifacts
+          curl -fL --retry 3 --retry-delay 2 -o "artifacts/$archive_name" "$download_url"
+
+          echo "tag_name=$tag_name" >> "$GITHUB_OUTPUT"
+          echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+          echo "archive_name=$archive_name" >> "$GITHUB_OUTPUT"
+
+      - name: Install Sparkle tools
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 --retry-delay 2 \
+            -o sparkle.tar.xz \
+            "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz"
+          tar -xJf sparkle.tar.xz
+          generate_appcast_path="$(find . -type f -path "*/bin/generate_appcast" | head -n 1)"
+          if [ -z "$generate_appcast_path" ]; then
+            echo "Could not find generate_appcast in Sparkle distribution."
+            exit 1
+          fi
+          chmod +x "$generate_appcast_path"
+          echo "GENERATE_APPCAST=$generate_appcast_path" >> "$GITHUB_ENV"
+
+      - name: Generate appcast.xml
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          TAG_NAME: ${{ steps.resolve.outputs.tag_name }}
+          ARCHIVE_NAME: ${{ steps.resolve.outputs.archive_name }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SPARKLE_PRIVATE_KEY:-}" ]; then
+            echo "Missing SPARKLE_PRIVATE_KEY secret."
+            exit 1
+          fi
+
+          printf "%s" "$SPARKLE_PRIVATE_KEY" > sparkle_private_key
+          chmod 600 sparkle_private_key
+
+          "$GENERATE_APPCAST" \
+            --ed-key-file sparkle_private_key \
+            artifacts
+
+          if [ ! -f artifacts/appcast.xml ]; then
+            echo "generate_appcast did not produce artifacts/appcast.xml"
+            exit 1
+          fi
+
+          python3 - <<'PY'
+from pathlib import Path
+import xml.etree.ElementTree as ET
+import os
+
+appcast_path = Path("artifacts/appcast.xml")
+tree = ET.parse(appcast_path)
+root = tree.getroot()
+
+archive_name = os.environ["ARCHIVE_NAME"]
+tag_name = os.environ["TAG_NAME"]
+repo = os.environ["GITHUB_REPOSITORY"]
+download_url = f"https://github.com/{repo}/releases/download/{tag_name}/{archive_name}"
+
+for enclosure in root.findall(".//enclosure"):
+    enclosure.set("url", download_url)
+
+tree.write(appcast_path, encoding="utf-8", xml_declaration=True)
+PY
+
+      - name: Upload appcast.xml to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ steps.resolve.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG_NAME" artifacts/appcast.xml --clobber

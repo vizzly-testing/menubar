@@ -6,6 +6,7 @@
 //
 
 import ServiceManagement
+import Sparkle
 import SwiftUI
 
 // MARK: - Design Tokens
@@ -25,10 +26,11 @@ extension Color {
 @main
 struct VizzlyApp: App {
   @StateObject private var serverManager = ServerManager()
+  private let appUpdater = AppUpdater()
 
   var body: some Scene {
     MenuBarExtra {
-      PanelView(serverManager: serverManager)
+      PanelView(serverManager: serverManager, appUpdater: appUpdater)
     } label: {
       MenuBarLabel(serverManager: serverManager)
     }
@@ -44,6 +46,53 @@ struct VizzlyApp: App {
       }
     }
     .windowResizability(.contentSize)
+    .commands {
+      CommandGroup(after: .appInfo) {
+        Button("Check for Updates…") {
+          appUpdater.checkForUpdates()
+        }
+      }
+    }
+  }
+}
+
+@MainActor
+final class AppUpdater: NSObject {
+  private let updaterController: SPUStandardUpdaterController
+  private let updaterDelegate: FeedURLUpdaterDelegate
+
+  override init() {
+    self.updaterDelegate = FeedURLUpdaterDelegate(
+      fallbackFeedURLString: "https://github.com/vizzly-testing/menubar/releases/latest/download/appcast.xml"
+    )
+    self.updaterController = SPUStandardUpdaterController(
+      startingUpdater: true,
+      updaterDelegate: updaterDelegate,
+      userDriverDelegate: nil
+    )
+    super.init()
+    updaterController.updater.automaticallyChecksForUpdates = false
+  }
+
+  func checkForUpdates() {
+    NSApp.activate(ignoringOtherApps: true)
+    updaterController.checkForUpdates(nil)
+  }
+}
+
+private final class FeedURLUpdaterDelegate: NSObject, SPUUpdaterDelegate {
+  private let fallbackFeedURLString: String
+
+  init(fallbackFeedURLString: String) {
+    self.fallbackFeedURLString = fallbackFeedURLString
+  }
+
+  func feedURLString(for updater: SPUUpdater) -> String? {
+    if let feedURL = Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String,
+       !feedURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      return feedURL
+    }
+    return fallbackFeedURLString
   }
 }
 
@@ -86,6 +135,7 @@ struct MenuBarLabel: View {
 
 struct PanelView: View {
   @ObservedObject var serverManager: ServerManager
+  let appUpdater: AppUpdater
   @Environment(\.openSettings) private var openSettings
 
   var body: some View {
@@ -259,6 +309,16 @@ struct PanelView: View {
       }
 
       Spacer()
+
+      Button {
+        appUpdater.checkForUpdates()
+      } label: {
+        Image(systemName: "arrow.down.circle")
+          .font(.system(size: 11, weight: .medium))
+          .frame(width: 28, height: 24)
+      }
+      .buttonStyle(FooterButtonStyle())
+      .help("Check for Updates…")
 
       Button {
         NSApp.activate(ignoringOtherApps: true)
