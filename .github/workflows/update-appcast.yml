@@ -9,11 +9,6 @@ on:
         description: "Release tag (for example: v1.2.3). Leave empty to use latest release."
         required: false
         type: string
-      asset_regex:
-        description: "Regex used to find release archives."
-        required: false
-        default: "Vizzly.*\\.zip$"
-        type: string
 
 permissions:
   contents: write
@@ -23,23 +18,16 @@ jobs:
     runs-on: macos-15
     env:
       SPARKLE_VERSION: "2.8.1"
-      DEFAULT_ASSET_REGEX: "Vizzly.*\\.zip$"
     steps:
       - name: Resolve release and select archive
         id: resolve
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INPUT_RELEASE_TAG: ${{ github.event.inputs.release_tag }}
-          INPUT_ASSET_REGEX: ${{ github.event.inputs.asset_regex }}
           EVENT_NAME: ${{ github.event_name }}
           EVENT_RELEASE_URL: ${{ github.event.release.url }}
         run: |
           set -euo pipefail
-
-          asset_regex="${INPUT_ASSET_REGEX:-$DEFAULT_ASSET_REGEX}"
-          if [ -z "$asset_regex" ]; then
-            asset_regex="$DEFAULT_ASSET_REGEX"
-          fi
 
           if [ "$EVENT_NAME" = "release" ] && [ -n "${EVENT_RELEASE_URL:-}" ]; then
             release_json="$(gh api "$EVENT_RELEASE_URL")"
@@ -54,9 +42,9 @@ jobs:
 
           archive_name="$(
             echo "$release_json" \
-              | jq -r --arg re "$asset_regex" '
+              | jq -r '
                 .assets
-                | map(select(.name | test($re)))
+                | map(select(.name | endswith(".zip")))
                 | sort_by(.updated_at)
                 | last
                 | .name // empty
@@ -64,7 +52,7 @@ jobs:
           )"
 
           if [ -z "$archive_name" ]; then
-            echo "No release asset matched regex: $asset_regex"
+            echo "No .zip release asset found."
             echo "Upload your signed ZIP first, then rerun this workflow."
             exit 1
           fi

@@ -59,7 +59,7 @@ Vizzly uses [Sparkle](https://sparkle-project.org/) for in-app updates.
 3. Create/publish a GitHub release with a tag (for example `v1.0.0`).
 4. Upload the signed `.zip` asset to that release.
 5. GitHub Actions workflow `.github/workflows/update-appcast.yml` will:
-   - find the uploaded zip
+   - pick the most recently updated `.zip` asset in that release
    - generate and sign `appcast.xml`
    - upload `appcast.xml` to the same release
 
