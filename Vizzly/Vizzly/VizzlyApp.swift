@@ -86,6 +86,7 @@ struct MenuBarLabel: View {
 
 struct PanelView: View {
   @ObservedObject var serverManager: ServerManager
+  @Environment(\.openSettings) private var openSettings
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -135,7 +136,10 @@ struct PanelView: View {
   private var statusBadge: some View {
     HStack(spacing: 4) {
       Circle()
-        .fill(serverManager.hasFailures ? Color.vzDanger : (serverManager.allHealthy ? Color.vzSuccess : Color.vzAccent))
+        .fill(
+          serverManager.hasFailures
+            ? Color.vzDanger : (serverManager.allHealthy ? Color.vzSuccess : Color.vzAccent)
+        )
         .frame(width: 6, height: 6)
       Text("\(serverManager.servers.count)")
         .font(.system(size: 10, weight: .medium, design: .rounded))
@@ -210,7 +214,9 @@ struct PanelView: View {
         .font(.system(size: 10))
         .lineLimit(1)
       Spacer()
-      Button { serverManager.clearError() } label: {
+      Button {
+        serverManager.clearError()
+      } label: {
         Image(systemName: "xmark")
           .font(.system(size: 8, weight: .medium))
       }
@@ -254,7 +260,10 @@ struct PanelView: View {
 
       Spacer()
 
-      SettingsLink {
+      Button {
+        NSApp.activate(ignoringOtherApps: true)
+        openSettings()
+      } label: {
         Image(systemName: "gearshape")
           .font(.system(size: 11, weight: .medium))
           .frame(width: 28, height: 24)
@@ -262,7 +271,9 @@ struct PanelView: View {
       .buttonStyle(FooterButtonStyle())
       .help("Settings")
 
-      Button { startServer() } label: {
+      Button {
+        startServer()
+      } label: {
         Image(systemName: "plus")
           .font(.system(size: 11, weight: .medium))
           .frame(width: 28, height: 24)
@@ -321,7 +332,9 @@ struct ServerRowView: View {
   }
 
   var body: some View {
-    Button { serverManager.openDashboard(server) } label: {
+    Button {
+      serverManager.openDashboard(server)
+    } label: {
       HStack(alignment: .top, spacing: 8) {
         // Status - aligned to first line
         Circle()
@@ -374,7 +387,9 @@ struct ServerRowView: View {
 
   private var serverMenu: some View {
     Menu {
-      Button { serverManager.openDashboard(server) } label: {
+      Button {
+        serverManager.openDashboard(server)
+      } label: {
         Label("Open Dashboard", systemImage: "globe")
       }
       Divider()
@@ -384,7 +399,9 @@ struct ServerRowView: View {
       } label: {
         Label("View Logs", systemImage: "doc.text")
       }
-      Button { serverManager.openInFinder(server) } label: {
+      Button {
+        serverManager.openInFinder(server)
+      } label: {
         Label("Show in Finder", systemImage: "folder")
       }
       Button {
@@ -506,7 +523,9 @@ struct LogsWindow: View {
         .buttonStyle(.borderless)
         .tint(autoScroll ? .vzAccent : .secondary)
 
-        Button { serverManager.refreshLogs(for: server) } label: {
+        Button {
+          serverManager.refreshLogs(for: server)
+        } label: {
           Image(systemName: "arrow.clockwise")
         }
         .buttonStyle(.borderless)
@@ -524,7 +543,11 @@ struct LogsWindow: View {
 
       // Logs
       if logs.isEmpty && commandErrors.isEmpty {
-        ContentUnavailableView("No Logs", systemImage: "text.alignleft", description: Text("Logs appear as requests are processed"))
+        ContentUnavailableView(
+          "No Logs",
+          systemImage: "text.alignleft",
+          description: Text("Logs appear as requests are processed")
+        )
       } else {
         ScrollViewReader { proxy in
           ScrollView {
