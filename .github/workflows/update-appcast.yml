@@ -126,24 +126,24 @@ jobs:
           fi
 
           python3 - <<'PY'
-from pathlib import Path
-import xml.etree.ElementTree as ET
-import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          import os
 
-appcast_path = Path("artifacts/appcast.xml")
-tree = ET.parse(appcast_path)
-root = tree.getroot()
+          appcast_path = Path("artifacts/appcast.xml")
+          tree = ET.parse(appcast_path)
+          root = tree.getroot()
 
-archive_name = os.environ["ARCHIVE_NAME"]
-tag_name = os.environ["TAG_NAME"]
-repo = os.environ["GITHUB_REPOSITORY"]
-download_url = f"https://github.com/{repo}/releases/download/{tag_name}/{archive_name}"
+          archive_name = os.environ["ARCHIVE_NAME"]
+          tag_name = os.environ["TAG_NAME"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          download_url = f"https://github.com/{repo}/releases/download/{tag_name}/{archive_name}"
 
-for enclosure in root.findall(".//enclosure"):
-    enclosure.set("url", download_url)
+          for enclosure in root.findall(".//enclosure"):
+              enclosure.set("url", download_url)
 
-tree.write(appcast_path, encoding="utf-8", xml_declaration=True)
-PY
+          tree.write(appcast_path, encoding="utf-8", xml_declaration=True)
+          PY
 
       - name: Upload appcast.xml to release
         env:
