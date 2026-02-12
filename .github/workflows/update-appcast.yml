@@ -133,3 +133,69 @@ jobs:
         run: |
           set -euo pipefail
           gh release upload "$TAG_NAME" artifacts/appcast.xml --clobber --repo "$GITHUB_REPOSITORY"
+
+      - name: Update Homebrew tap cask
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          TAG_NAME: ${{ steps.resolve.outputs.tag_name }}
+          ARCHIVE_NAME: ${{ steps.resolve.outputs.archive_name }}
+          TAP_REPOSITORY: vizzly-testing/homebrew-tap
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "Missing HOMEBREW_TAP_GITHUB_TOKEN secret."
+            exit 1
+          fi
+
+          archive_path="artifacts/$ARCHIVE_NAME"
+          if [ ! -f "$archive_path" ]; then
+            echo "Expected release archive not found at $archive_path"
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+
+          version = os.environ["TAG_NAME"].removeprefix("v")
+          archive_name = os.environ["ARCHIVE_NAME"]
+          archive_path = Path("artifacts") / archive_name
+          sha256 = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+
+          lines = [
+              'cask "vizzly" do',
+              f'  version "{version}"',
+              f'  sha256 "{sha256}"',
+              "",
+              f'  url "https://github.com/vizzly-testing/menubar/releases/download/v#{{version}}/{archive_name}",',
+              '      verified: "github.com/vizzly-testing/menubar/"',
+              '  name "Vizzly"',
+              '  desc "Native macOS menubar app for managing Vizzly TDD servers"',
+              '  homepage "https://github.com/vizzly-testing/menubar"',
+              "",
+              '  app "Vizzly.app"',
+              "end",
+              "",
+          ]
+          Path("vizzly.rb").write_text("\n".join(lines), encoding="utf-8")
+          PY
+
+          content="$(base64 < vizzly.rb | tr -d '\n')"
+          existing_sha="$(
+            gh api "repos/$TAP_REPOSITORY/contents/Casks/vizzly.rb" --jq '.sha' 2>/dev/null || true
+          )"
+
+          if [ -n "$existing_sha" ]; then
+            gh api "repos/$TAP_REPOSITORY/contents/Casks/vizzly.rb" \
+              -X PUT \
+              -f message="🍺 Update vizzly cask to $TAG_NAME" \
+              -f content="$content" \
+              -f sha="$existing_sha"
+          else
+            gh api "repos/$TAP_REPOSITORY/contents/Casks/vizzly.rb" \
+              -X PUT \
+              -f message="🍺 Add vizzly cask for $TAG_NAME" \
+              -f content="$content"
+          fi

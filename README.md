@@ -51,6 +51,7 @@ Vizzly uses [Sparkle](https://sparkle-project.org/) for in-app updates.
 1. Generate Sparkle keys locally (`generate_keys` from Sparkle tools).
 2. Add `SUPublicEDKey` in the Vizzly app target build settings (Info.plist key).
 3. Add a GitHub Actions secret named `SPARKLE_PRIVATE_KEY` with the full private key contents.
+4. Add a GitHub Actions secret named `HOMEBREW_TAP_GITHUB_TOKEN` with repo write access to `vizzly-testing/homebrew-tap`.
 
 ### Release flow (manual binary, automated appcast)
 
@@ -62,6 +63,7 @@ Vizzly uses [Sparkle](https://sparkle-project.org/) for in-app updates.
    - pick the most recently updated `.zip` asset in that release
    - generate and sign `appcast.xml`
    - upload `appcast.xml` to the same release
+   - update `vizzly-testing/homebrew-tap/Casks/vizzly.rb` with the release version + SHA256
 
 Sparkle feed URL in the app points to:
 
