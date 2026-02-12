@@ -57,18 +57,11 @@ jobs:
             exit 1
           fi
 
-          download_url="$(
-            echo "$release_json" \
-              | jq -r --arg name "$archive_name" '.assets[] | select(.name == $name) | .browser_download_url'
-          )"
-
-          if [ -z "$download_url" ]; then
-            echo "Matched asset has no download URL."
-            exit 1
-          fi
-
           mkdir -p artifacts
-          curl -fL --retry 3 --retry-delay 2 -o "artifacts/$archive_name" "$download_url"
+          gh release download "$tag_name" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "$archive_name" \
+            --dir artifacts
 
           echo "tag_name=$tag_name" >> "$GITHUB_OUTPUT"
           echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
