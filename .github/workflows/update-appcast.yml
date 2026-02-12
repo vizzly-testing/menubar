@@ -132,4 +132,4 @@ jobs:
           TAG_NAME: ${{ steps.resolve.outputs.tag_name }}
         run: |
           set -euo pipefail
-          gh release upload "$TAG_NAME" artifacts/appcast.xml --clobber
+          gh release upload "$TAG_NAME" artifacts/appcast.xml --clobber --repo "$GITHUB_REPOSITORY"
